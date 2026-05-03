@@ -1,0 +1,116 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout kernel
+      run: |
+        # جرب عدة مصادر
+        git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_mt6768 kernel || \
+        git clone --depth=1 https://github.com/xiaomi-mt6768-dev/android_kernel_xiaomi_mt6768 -b lineage-20 kernel || \
+        git clone --depth=1 https://github.com/chiteroman/android_kernel_xiaomi_mt6768 kernel
+
+    - name: Verify kernel source
+      run: |
+        cd kernel
+        echo "=== Kernel source downloaded ==="
+        ls -la
+        echo "=== Available defconfigs ==="
+        ls -la arch/arm64/configs/ | grep -E "lime|k6768"
+
+    - name: Setup environment
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y bc bison build-essential flex \
+        libssl-dev libncurses5-dev libelf-dev git curl wget zip
+
+    - name: Download Clang
+      run: |
+        git clone --depth=1 https://gitlab.com/ZyCromerZ/clang-14 clang
+
+    - name: Build kernel
+      run: |
+        cd kernel
+        export PATH="${GITHUB_WORKSPACE}/clang/bin:$PATH"
+        export ARCH=arm64
+        export SUBARCH=arm64
+        
+        # استخدم defconfig المتاح
+        if [ -f arch/arm64/configs/lime_defconfig ]; then
+          make O=out ARCH=arm64 lime_defconfig
+        elif [ -f arch/arm64/configs/k6768v1_64_defconfig ]; then
+          make O=out ARCH=arm64 k6768v1_64_defconfig
+        else
+          echo "No defconfig found!"
+          ls arch/arm64/configs/
+          exit 1
+        fi
+        
+        # Enable touchscreen
+        echo "CONFIG_TOUCHSCREEN_FTS=y" >> out/.config
+        echo "CONFIG_TOUCHSCREEN_MTK_TOUCH=y" >> out/.config
+        echo "CONFIG_INPUT_TOUCHSCREEN=y" >> out/.config
+        
+        make O=out ARCH=arm64 olddefconfig
+        
+        # Build
+        make -j$(nproc) O=out \
+          ARCH=arm64 \
+          CC=clang \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- || exit 1
+
+    - name: Check build result
+      run: |
+        if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+          echo "✅ Kernel built successfully!"
+          ls -lh kernel/out/arch/arm64/boot/Image.gz-dtb
+        else
+          echo "❌ Build failed!"
+          exit 1
+        fi
+
+    - name: Create flashable zip
+      run: |
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+        cd AnyKernel3
+        rm -rf .git* modules patch ramdisk
+        
+        cat > anykernel.sh << 'EOF'
+        properties() { '
+        kernel.string=Custom Kernel for Redmi 9T
+        do.devicecheck=1
+        do.modules=0
+        do.systemless=1
+        do.cleanup=1
+        device.name1=lime
+        supported.versions=11-13
+        '; }
+        block=/dev/block/bootdevice/by-name/boot;
+        is_slot_device=0;
+        ramdisk_compression=auto;
+        . tools/ak3-core.sh;
+        dump_boot;
+        write_boot;
+        EOF
+        
+        cp ${GITHUB_WORKSPACE}/kernel/out/arch/arm64/boot/Image.gz-dtb ./
+        zip -r9 ../Kernel-Lime-$(date +%Y%m%d-%H%M).zip *
+
+    - name: Upload kernel
+      uses: actions/upload-artifact@v4
+      with:
+        name: Kernel-Redmi9T
+        path: Kernel-Lime-*.zip
+        
+    - name: Upload image only
+      uses: actions/upload-artifact@v4
+      with:
+        name: Image-only
+        path: kernel/out/arch/arm64/boot/Image.gz-dtb
