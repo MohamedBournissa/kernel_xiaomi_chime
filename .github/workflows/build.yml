@@ -1,0 +1,54 @@
+name: Build NetHunter Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout
+      run: |
+        git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_mt6768 kernel
+        cd kernel
+        # التأكد من وجود lime_defconfig
+        ls -la arch/arm64/configs/ | grep lime
+
+    - name: Setup
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential flex \
+        libssl-dev libncurses5-dev libelf-dev git
+
+    - name: Download toolchain
+      run: |
+        git clone --depth=1 https://gitlab.com/ZyCromerZ/clang-14 clang
+
+    - name: Build
+      run: |
+        cd kernel
+        export PATH="${GITHUB_WORKSPACE}/clang/bin:$PATH"
+        export ARCH=arm64
+        
+        make O=out lime_defconfig || make O=out k6768v1_64_defconfig
+        
+        make -j$(nproc) O=out \
+          ARCH=arm64 \
+          CC=clang \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+    - name: Package
+      run: |
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+        cd AnyKernel3
+        rm -rf .git*
+        cp ../kernel/out/arch/arm64/boot/Image.gz-dtb ./
+        zip -r9 ../Kernel-$(date +%Y%m%d).zip *
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: Kernel
+        path: Kernel-*.zip
